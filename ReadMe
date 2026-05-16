@@ -9,8 +9,6 @@ A JWT-based authentication REST API built with Node.js, Express, and MongoDB. Im
 ```
 ├── controllers/
 │   └── auth.controller.js      # register, login, getMe, refreshToken
-├── middleware/
-│   └── auth.middleware.js      # protect — verifies access token
 ├── utils/
 │   └── generateTokens.js       # signs access + refresh tokens
 ├── models/
@@ -38,7 +36,7 @@ MONGO_URI=your_mongodb_connection_string
 |--------|----------|---------------|-------------|
 | POST | `/api/auth/register` | No | Create new account |
 | POST | `/api/auth/login` | No | Login and receive tokens |
-| GET | `/api/auth/me` | Yes | Get logged in user data |
+| GET | `/api/auth/get-me` | Yes | Get logged in user data |
 | POST | `/api/auth/refresh-token` | No (cookie) | Get new access token |
 
 ---
@@ -62,7 +60,6 @@ MONGO_URI=your_mongodb_connection_string
 
 ### Get Me
 - Protected by `protect` middleware
-- Middleware extracts token from `Authorization: Bearer <token>` header
 - Verifies token, finds user, attaches to `req.user`
 - Returns `username` and `email` only — password and refreshToken excluded
 
@@ -115,8 +112,6 @@ If incoming token does not match what is stored in DB:
 
 ```javascript
 if (user.refreshToken !== incomingRefreshToken) {
-    user.refreshToken = null;  // wipe token
-    await user.save();         // force logout
     return res.status(401).json({ message: 'Invalid refresh token' });
 }
 ```
@@ -139,20 +134,6 @@ res.cookie('refreshToken', refreshToken, {
 ```
 
 ---
-
-## Protect Middleware
-
-Attach to any route that requires authentication:
-
-```javascript
-router.get('/me', protect, getMe);
-```
-
-- Extracts token from `Authorization: Bearer <token>` header
-- Verifies with `JWT_SECRET`
-- Finds user in DB — strips `password` and `refreshToken` from result
-- Attaches user object to `req.user`
-- All protected controllers access user via `req.user`
 
 ---
 
@@ -205,7 +186,7 @@ Response:
 
 ### Get Me
 ```
-GET /api/auth/me
+GET /api/auth/get-me
 Headers:
     Authorization: Bearer <accessToken>
 
@@ -262,14 +243,4 @@ Refresh token expires (7 days)
     └── must POST /login again
 ```
 
----
-
-## Security Summary
-
-| Threat | Protection |
-|--------|------------|
-| XSS | Refresh token in httpOnly cookie — JS cannot read it |
-| CSRF | `sameSite: strict` cookie flag |
-| Token theft | Short access token expiry (15 mins) |
-| Stolen refresh token | Reuse detection — mismatch wipes token, forces re-login |
-| Info leaking | Generic `Invalid credentials` message for all login failures |
+--
