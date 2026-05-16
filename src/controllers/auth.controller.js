@@ -1,0 +1,102 @@
+import User from '../models/user.model.js';
+import bcrypt from 'bcrypt';
+import jwt from "jsonwebtoken";
+import config from '../config/temp.js';
+import { generateTokens } from '../utils/generateTokens.js';
+
+export const register = async (req, res) => {
+    const { username, email, password } = req.body;
+
+    if(!username || !email || !password){
+        return res.status(400).json({ message: 'All fields are required' });
+    }
+    
+    const isAlreadyRegistered = await User.findOne(
+        { $or: [{ email }, { username }] }
+    );
+    if (isAlreadyRegistered) {
+        return res.status(400).json({ message: 'User already registered' });
+    }
+    
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    const user = await User.create({
+        username,
+        email,
+        password: hashedPassword,
+        refreshToken: null
+    });
+    res.status(201).json({ message: 'User registered successfully' });
+};
+
+export const login = async (req, res) => {
+    const { email, password, username } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) {
+    return res.status(401).json({ message: 'User not found' });
+}
+    if(user.email!=email || user.username!=username){
+        return res.status(400).json({ message: 'Invalid email or username' });
+    }
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+        return res.status(400).json({ message: 'Invalid password' });
+    }
+    const { accessToken, refreshToken } = await generateTokens(user, res);
+    user.refreshToken = refreshToken;
+    await user.save();
+
+    res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+    res.status(200).json({ message: 'Login successful', token: accessToken });
+};
+
+export const getMe = async (req, res) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+        return res.status(401).json({ message: 'No token provided' });
+    }
+
+   const decoded = jwt.verify(token, config.JWT_SECRET);
+   const user = await User.findById(decoded.id);
+   res.status(200).json({ 
+    message: 'User fetched successfully',
+    user:{
+        username: user.username,
+        email: user.email
+    } });
+};
+
+export const refreshToken = async (req, res) => {
+    const incomingRefreshToken = req.cookies.refreshToken;
+    if (!incomingRefreshToken) {
+        return res.status(401).json({ message: 'No refresh token provided' });
+    }
+    try {
+        const decoded = jwt.verify(incomingRefreshToken, config.JWT_SECRET);
+        const user = await User.findById(decoded.id);
+        if (!user) {
+            return res.status(401).json({ message: 'User not found' });
+        }
+         if (user.refreshToken !== incomingRefreshToken) {
+            return res.status(401).json({ message: 'Invalid refresh token' });
+        }
+        const { accessToken, refreshToken } = await generateTokens(user, res);
+        user.refreshToken = refreshToken;
+        await user.save();
+        res.cookie('refreshToken', refreshToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'strict',
+            maxAge: 7 * 24 * 60 * 60 * 1000
+        });
+        res.status(200).json({ message: 'Token refreshed successfully', token: accessToken });
+    } catch (error) {
+        return res.status(401).json({ message: 'Invalid refresh token' });
+    }
+};
