@@ -1,0 +1,275 @@
+# JWT Authentication API
+
+A JWT-based authentication REST API built with Node.js, Express, and MongoDB. Implements access/refresh token rotation, HTTP-only cookies, and protected routes via middleware.
+
+---
+
+## Folder Structure
+
+```
+├── controllers/
+│   └── auth.controller.js      # register, login, getMe, refreshToken
+├── middleware/
+│   └── auth.middleware.js      # protect — verifies access token
+├── utils/
+│   └── generateTokens.js       # signs access + refresh tokens
+├── models/
+│   └── user.model.js           # User schema
+├── routes/
+│   └── auth.routes.js          # API routes
+└── config/
+    └── temp.js                 # JWT_SECRET
+```
+
+---
+
+## Environment Variables
+
+```env
+JWT_SECRET=your_jwt_secret
+MONGO_URI=your_mongodb_connection_string
+```
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Auth Required | Description |
+|--------|----------|---------------|-------------|
+| POST | `/api/auth/register` | No | Create new account |
+| POST | `/api/auth/login` | No | Login and receive tokens |
+| GET | `/api/auth/me` | Yes | Get logged in user data |
+| POST | `/api/auth/refresh-token` | No (cookie) | Get new access token |
+
+---
+
+## How It Works
+
+### Register
+- Validates all fields are present
+- Checks if email or username already exists
+- Hashes password with bcrypt (salt rounds: 10)
+- Creates user in DB
+- Returns success message — **no tokens issued at register**
+
+### Login
+- Finds user by email
+- Compares password with bcrypt
+- Calls `generateTokens` → signs access + refresh tokens
+- Saves refresh token to DB
+- Sets refresh token in httpOnly cookie
+- Returns access token in response body
+
+### Get Me
+- Protected by `protect` middleware
+- Middleware extracts token from `Authorization: Bearer <token>` header
+- Verifies token, finds user, attaches to `req.user`
+- Returns `username` and `email` only — password and refreshToken excluded
+
+### Refresh Token
+- Reads refresh token from httpOnly cookie
+- Verifies token signature and expiry
+- Checks user exists in DB
+- Compares token against stored DB token (reuse detection)
+- Generates new access + refresh tokens (rotation)
+- Updates DB with new refresh token
+- Sets new cookie
+- Returns new access token
+
+---
+
+## Token Strategy
+
+| Token | Expiry | Travels Via |
+|-------|--------|-------------|
+| Access Token | 15 minutes | Response body → Authorization header |
+| Refresh Token | 7 days | httpOnly Cookie only |
+
+### Why Two Tokens?
+- **Access token** is short-lived (15 mins) — limits damage window if leaked
+- **Refresh token** is long-lived (7 days) — stored in httpOnly cookie, inaccessible to JavaScript
+
+---
+
+## Token Rotation
+
+Every call to `/refresh-token`:
+1. Verifies incoming refresh token
+2. Generates brand new access + refresh tokens
+3. Saves new refresh token to DB — old one is now invalid
+4. Sets new cookie on client
+
+```
+Login          → refresh token A saved to DB
+/refresh-token → token A verified against DB
+               → token B generated and saved
+               → token A is now invalid
+               → client now holds token B
+```
+
+---
+
+## Reuse / Theft Detection
+
+If incoming token does not match what is stored in DB:
+
+```javascript
+if (user.refreshToken !== incomingRefreshToken) {
+    user.refreshToken = null;  // wipe token
+    await user.save();         // force logout
+    return res.status(401).json({ message: 'Invalid refresh token' });
+}
+```
+
+- DB token is wiped to null
+- User is forced to log in again
+- Attacker's stolen token is permanently invalidated
+
+---
+
+## Cookie Security Flags
+
+```javascript
+res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,     // JS cannot access — blocks XSS
+    secure: true,       // HTTPS only
+    sameSite: 'strict', // no cross-site requests — blocks CSRF
+    maxAge: 7 * 24 * 60 * 60 * 1000  // 7 days in milliseconds
+});
+```
+
+---
+
+## Protect Middleware
+
+Attach to any route that requires authentication:
+
+```javascript
+router.get('/me', protect, getMe);
+```
+
+- Extracts token from `Authorization: Bearer <token>` header
+- Verifies with `JWT_SECRET`
+- Finds user in DB — strips `password` and `refreshToken` from result
+- Attaches user object to `req.user`
+- All protected controllers access user via `req.user`
+
+---
+
+## User Model
+
+Requires a `refreshToken` field on the schema:
+
+```javascript
+{
+    username:     { type: String, required: true, unique: true },
+    email:        { type: String, required: true, unique: true },
+    password:     { type: String, required: true },
+    refreshToken: { type: String, default: null }
+}
+```
+
+---
+
+## Testing with Postman
+
+### Register
+```
+POST /api/auth/register
+Body (JSON):
+{
+    "username": "john_doe",
+    "email": "john@gmail.com",
+    "password": "123456"
+}
+Response:
+{
+    "message": "User registered successfully"
+}
+```
+
+### Login
+```
+POST /api/auth/login
+Body (JSON):
+{
+    "email": "john@gmail.com",
+    "password": "123456"
+}
+Response:
+{
+    "message": "Login successful",
+    "token": "<accessToken>"
+}
+```
+
+### Get Me
+```
+GET /api/auth/me
+Headers:
+    Authorization: Bearer <accessToken>
+
+Response:
+{
+    "message": "User fetched successfully",
+    "user": {
+        "username": "john_doe",
+        "email": "john@gmail.com"
+    }
+}
+```
+
+### Refresh Token
+```
+POST /api/auth/refresh-token
+(cookie sent automatically by Postman)
+
+Response:
+{
+    "message": "Token refreshed successfully",
+    "token": "<newAccessToken>"
+}
+```
+
+---
+
+## Full Auth Flow
+
+```
+POST /register
+    │
+    └── account created, no tokens
+
+POST /login
+    │
+    ├── access token → response body (15 mins)
+    └── refresh token → httpOnly cookie (7 days)
+
+GET /me
+    │
+    └── Authorization: Bearer <accessToken> → returns user data
+
+Access token expires
+    │
+    └── POST /refresh-token
+            │
+            ├── cookie verified against DB
+            ├── new access + refresh tokens issued
+            └── repeats every 15 mins
+
+Refresh token expires (7 days)
+    │
+    └── must POST /login again
+```
+
+---
+
+## Security Summary
+
+| Threat | Protection |
+|--------|------------|
+| XSS | Refresh token in httpOnly cookie — JS cannot read it |
+| CSRF | `sameSite: strict` cookie flag |
+| Token theft | Short access token expiry (15 mins) |
+| Stolen refresh token | Reuse detection — mismatch wipes token, forces re-login |
+| Info leaking | Generic `Invalid credentials` message for all login failures |
