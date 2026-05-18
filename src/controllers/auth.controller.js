@@ -24,7 +24,8 @@ export const register = async (req, res) => {
         username,
         email,
         password: hashedPassword,
-        refreshToken: null
+        refreshToken: null,
+        role: 'user'
     });
     res.status(201).json({ message: 'User registered successfully' });
 };
@@ -52,7 +53,7 @@ export const login = async (req, res) => {
         sameSite: 'strict',
         maxAge: 7 * 24 * 60 * 60 * 1000
     });
-    res.status(200).json({ message: 'Login successful', token: accessToken });
+    res.status(200).json({ message: 'Login successful', token: accessToken, role: user.role });
 };
 
 export const getMe = async (req, res) => {
@@ -68,7 +69,8 @@ export const getMe = async (req, res) => {
     message: 'User fetched successfully',
     user:{
         username: user.username,
-        email: user.email
+        email: user.email,
+        role: user.role
     } });
 };
 
@@ -98,5 +100,46 @@ export const refreshToken = async (req, res) => {
         res.status(200).json({ message: 'Token refreshed successfully', token: accessToken });
     } catch (error) {
         return res.status(401).json({ message: 'Invalid refresh token' });
+    }
+};
+
+
+export const changeRole = async (req, res) => {
+    try {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (!token) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+        const decoded = jwt.verify(token, config.JWT_SECRET);
+        const user = await User.findById(decoded.id);
+        if (!user) {
+            return res.status(401).json({ message: 'User not found' });
+        }
+        if (user.role !== 'admin') {
+            return res.status(403).json({ message: 'Forbidden' });
+        }
+
+        const { userId, role } = req.body;
+        console.log('userId:', userId);
+        console.log('role:', role);      
+
+
+        if (!['user', 'manager', 'admin'].includes(role)) {
+            return res.status(400).json({ message: 'Invalid role' });
+        }
+
+        const userToUpdate = await User.findById(userId);
+                console.log('userToUpdate:', userToUpdate); 
+        if (!userToUpdate) {
+            return res.status(404).json({ message: 'User to update not found' });
+        }
+
+        userToUpdate.role = role;
+        await userToUpdate.save();
+        res.status(200).json({ message: 'Role updated successfully' });
+
+    } catch (error) {
+         console.log('ERROR:', error.message);
+        res.status(500).json({ message: 'Server error' });
     }
 };

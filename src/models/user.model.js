@@ -15,7 +15,10 @@ const userSchema = new mongoose.Schema({
     },
     refreshToken: {
         type: String
-    }
+    },
+    role: { type: String, 
+        enum: ['user', 'admin', 'manager'], 
+        default: 'user' }
 });
 const User= mongoose.model('User',userSchema);
 export default User;

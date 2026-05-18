@@ -5,8 +5,11 @@ const authRouter = Router();
 authRouter.post('/register', authController.register);
 //get request
 authRouter.get('/get-me', authController.getMe);
-export default authRouter;  
+
 //refresh token
-authRouter.get('/refresh-token', authController.refreshToken);
+authRouter.post('/refresh-token', authController.refreshToken);
 //login
 authRouter.post('/login', authController.login);
+//role based access control
+authRouter.patch('/update-role', authController.changeRole);
+export default authRouter;  
