@@ -36,9 +36,6 @@ export const login = async (req, res) => {
     if (!user) {
     return res.status(401).json({ message: 'User not found' });
 }
-    if(user.email!=email || user.username!=username){
-        return res.status(400).json({ message: 'Invalid email or username' });
-    }
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
         return res.status(400).json({ message: 'Invalid password' });
@@ -57,23 +54,15 @@ export const login = async (req, res) => {
 };
 
 export const getMe = async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    
-    if (!token) {
-        return res.status(401).json({ message: 'No token provided' });
-    }
-
-   const decoded = jwt.verify(token, config.JWT_SECRET);
-   const user = await User.findById(decoded.id);
-   res.status(200).json({ 
-    message: 'User fetched successfully',
-    user:{
-        username: user.username,
-        email: user.email,
-        role: user.role
-    } });
+    res.status(200).json({
+        message: 'User fetched successfully',
+        user: {
+            username: req.user.username,
+            email: req.user.email,
+            role: req.user.role
+        }
+    });
 };
-
 export const refreshToken = async (req, res) => {
     const incomingRefreshToken = req.cookies.refreshToken;
     if (!incomingRefreshToken) {
@@ -106,19 +95,6 @@ export const refreshToken = async (req, res) => {
 
 export const changeRole = async (req, res) => {
     try {
-        const token = req.headers.authorization?.split(' ')[1];
-        if (!token) {
-            return res.status(401).json({ message: 'Unauthorized' });
-        }
-        const decoded = jwt.verify(token, config.JWT_SECRET);
-        const user = await User.findById(decoded.id);
-        if (!user) {
-            return res.status(401).json({ message: 'User not found' });
-        }
-        if (user.role !== 'admin') {
-            return res.status(403).json({ message: 'Forbidden' });
-        }
-
         const { userId, role } = req.body;
         console.log('userId:', userId);
         console.log('role:', role);      
