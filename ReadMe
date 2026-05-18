@@ -1,21 +1,24 @@
 # JWT Authentication API
 
-A JWT-based authentication REST API built with Node.js, Express, and MongoDB. Implements access/refresh token rotation, HTTP-only cookies.
+A JWT-based authentication REST API built with Node.js, Express, and MongoDB. Implements access/refresh token rotation, HTTP-only cookies, and role-based access control.
+
 ---
 
 ## Folder Structure
 
 ```
 ├── controllers/
-│   └── auth.controller.js      # register, login, getMe, refreshToken
+│   ├── auth.controller.js      # register, login, getMe, refreshToken, changeRole
+│   └── dele.controller.js      # deleteUser (admin only)
 ├── utils/
 │   └── generateTokens.js       # signs access + refresh tokens
 ├── models/
 │   └── user.model.js           # User schema
 ├── routes/
-│   └── auth.routes.js          # API routes
+│   ├── auth.routes.js          # auth API routes
+│   └── dele.route.js           # delete user route
 └── config/
-    └── temp.js                 # JWT_SECRET
+    └── temp.js                 # JWT_SECRET, MONGO_URI
 ```
 
 ---
@@ -25,11 +28,14 @@ A JWT-based authentication REST API built with Node.js, Express, and MongoDB. Im
 ```env
 JWT_SECRET=your_jwt_secret
 MONGO_URI=your_mongodb_connection_string
+NODE_ENV=development
 ```
 
 ---
 
 ## API Endpoints
+
+### Auth Routes — `/api/auth`
 
 | Method | Endpoint | Auth Required | Description |
 |--------|----------|---------------|-------------|
@@ -37,6 +43,13 @@ MONGO_URI=your_mongodb_connection_string
 | POST | `/api/auth/login` | No | Login and receive tokens |
 | GET | `/api/auth/get-me` | Yes | Get logged in user data |
 | POST | `/api/auth/refresh-token` | No (cookie) | Get new access token |
+| PATCH | `/api/auth/update-role` | Yes (admin only) | Change a user's role |
+
+### Delete Routes — `/api/dele`
+
+| Method | Endpoint | Auth Required | Description |
+|--------|----------|---------------|-------------|
+| DELETE | `/api/dele/users/:id` | Yes (admin only) | Delete a user by ID |
 
 ---
 
@@ -46,7 +59,7 @@ MONGO_URI=your_mongodb_connection_string
 - Validates all fields are present
 - Checks if email or username already exists
 - Hashes password with bcrypt (salt rounds: 10)
-- Creates user in DB
+- Creates user in DB with `role: 'user'` by default
 - Returns success message — **no tokens issued at register**
 
 ### Login
@@ -55,12 +68,12 @@ MONGO_URI=your_mongodb_connection_string
 - Calls `generateTokens` → signs access + refresh tokens
 - Saves refresh token to DB
 - Sets refresh token in httpOnly cookie
-- Returns access token in response body
+- Returns access token and role in response body
 
 ### Get Me
-- Protected by `protect` middleware
-- Verifies token, finds user, attaches to `req.user`
-- Returns `username` and `email` only — password and refreshToken excluded
+- Extracts token from `Authorization: Bearer <token>` header
+- Verifies token, finds user in DB
+- Returns `username`, `email`, and `role`
 
 ### Refresh Token
 - Reads refresh token from httpOnly cookie
@@ -71,6 +84,19 @@ MONGO_URI=your_mongodb_connection_string
 - Updates DB with new refresh token
 - Sets new cookie
 - Returns new access token
+
+### Change Role (admin only)
+- Extracts and verifies token
+- Checks requesting user has `role: 'admin'`
+- Validates new role is one of: `user`, `manager`, `admin`
+- Updates target user's role in DB
+
+### Delete User (admin only)
+- Extracts and verifies token
+- Checks requesting user has `role: 'admin'`
+- Finds target user by `req.params.id`
+- Prevents admin from deleting themselves
+- Deletes user from DB
 
 ---
 
@@ -115,9 +141,19 @@ if (user.refreshToken !== incomingRefreshToken) {
 }
 ```
 
-- DB token is wiped to null
-- User is forced to log in again
-- Attacker's stolen token is permanently invalidated
+Token mismatch means a stolen or old token is being used — user is forced to log in again.
+
+---
+
+## Role Based Access Control
+
+| Role | Permissions |
+|------|-------------|
+| `user` | Access protected routes |
+| `manager` | Access protected routes |
+| `admin` | Everything + change roles + delete users |
+
+The first admin must be set **manually in MongoDB** since all users register as `user` by default. After that, the admin can promote others via `PATCH /api/auth/update-role`.
 
 ---
 
@@ -134,18 +170,15 @@ res.cookie('refreshToken', refreshToken, {
 
 ---
 
----
-
 ## User Model
-
-Requires a `refreshToken` field on the schema:
 
 ```javascript
 {
-    username:     { type: String, required: true, unique: true },
+    username:     { type: String, required: true },
     email:        { type: String, required: true, unique: true },
     password:     { type: String, required: true },
-    refreshToken: { type: String, default: null }
+    refreshToken: { type: String },
+    role:         { type: String, enum: ['user', 'admin', 'manager'], default: 'user' }
 }
 ```
 
@@ -179,7 +212,8 @@ Body (JSON):
 Response:
 {
     "message": "Login successful",
-    "token": "<accessToken>"
+    "token": "<accessToken>",
+    "role": "admin"
 }
 ```
 
@@ -194,7 +228,8 @@ Response:
     "message": "User fetched successfully",
     "user": {
         "username": "john_doe",
-        "email": "john@gmail.com"
+        "email": "john@gmail.com",
+        "role": "admin"
     }
 }
 ```
@@ -211,6 +246,34 @@ Response:
 }
 ```
 
+### Change Role (admin only)
+```
+PATCH /api/auth/update-role
+Headers:
+    Authorization: Bearer <adminAccessToken>
+Body (JSON):
+{
+    "userId": "<target user's _id>",
+    "role": "manager"
+}
+Response:
+{
+    "message": "Role updated successfully"
+}
+```
+
+### Delete User (admin only)
+```
+DELETE /api/dele/users/<userId>
+Headers:
+    Authorization: Bearer <adminAccessToken>
+
+Response:
+{
+    "message": "User deleted successfully"
+}
+```
+
 ---
 
 ## Full Auth Flow
@@ -218,14 +281,14 @@ Response:
 ```
 POST /register
     │
-    └── account created, no tokens
+    └── account created, role: 'user', no tokens
 
 POST /login
     │
     ├── access token → response body (15 mins)
     └── refresh token → httpOnly cookie (7 days)
 
-GET /me
+GET /get-me
     │
     └── Authorization: Bearer <accessToken> → returns user data
 
@@ -242,4 +305,15 @@ Refresh token expires (7 days)
     └── must POST /login again
 ```
 
---
+---
+
+## Security Summary
+
+| Threat | Protection |
+|--------|------------|
+| XSS | Refresh token in httpOnly cookie — JS cannot read it |
+| CSRF | `sameSite: strict` cookie flag |
+| Token theft | Short access token expiry (15 mins) |
+| Stolen refresh token | Reuse detection — mismatch returns 401 |
+| Info leaking | Generic error messages for login failures |
+| Unauthorized role changes | Only admin can change roles or delete users |
