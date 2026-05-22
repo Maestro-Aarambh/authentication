@@ -13,5 +13,5 @@ authRouter.post('/login', validateLogin, authController.login);
 authRouter.get('/get-me', authentication, authController.getMe);
 authRouter.post('/refresh-token', authController.refreshToken);
 authRouter.patch('/update-role', authentication, adminOnly, validateChangeRole, authController.changeRole);
-
+authRouter.get('/verify-email/:token', authController.verifyEmail);
 export default authRouter;

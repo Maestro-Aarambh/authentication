@@ -1,6 +1,6 @@
 # JWT Authentication API
 
-A JWT-based authentication REST API built with Node.js, Express, and MongoDB. Implements access/refresh token rotation, HTTP-only cookies, role-based access control (RBAC), input validation, and centralized error handling.
+A JWT-based authentication REST API built with Node.js, Express, and MongoDB. Implements access/refresh token rotation, HTTP-only cookies, role-based access control (RBAC), input validation, email verification, and centralized error handling.
 
 ---
 
@@ -14,6 +14,7 @@ A JWT-based authentication REST API built with Node.js, Express, and MongoDB. Im
 | Auth | JSON Web Tokens (`jsonwebtoken`) |
 | Password hashing | bcrypt |
 | Validation | express-validator |
+| Email | nodemailer |
 | HTTP logging | Morgan |
 | Cookie parsing | cookie-parser |
 | Config | dotenv |
@@ -29,9 +30,9 @@ auth/
     ├── app.js
     ├── config/
     │   ├── database.js
-    │   └── temp.js
+    │   └── temp.js                        ← add EMAIL and EMAIL_PASSWORD here
     ├── controllers/
-    │   ├── auth.controller.js
+    │   ├── auth.controller.js             ← update register, login, add verifyEmail
     │   └── dele.controller.js
     ├── middleware/
     │   ├── authentication.middleware.js
@@ -42,12 +43,13 @@ auth/
     │       ├── login.validator.js
     │       └── changeRole.validator.js
     ├── models/
-    │   └── user.model.js
+    │   └── user.model.js                  ← add isVerified, verificationToken fields
     ├── routes/
-    │   ├── auth.routes.js
+    │   ├── auth.routes.js                 ← add verify-email route
     │   └── dele.route.js
     └── utils/
-        └── generateTokens.js
+        ├── generateTokens.js
+        └── sendEmail.js                   ← new file
 ```
 
 ---
@@ -58,6 +60,17 @@ auth/
 JWT_SECRET=your_jwt_secret_here
 MONGO_URI=mongodb://localhost:27017/auth
 NODE_ENV=development
+EMAIL=yourmail@gmail.com
+EMAIL_PASSWORD=abcd efgh ijkl mnop        ← Gmail App Password (not your real password)
+```
+
+### How to get Gmail App Password
+```
+1. Go to myaccount.google.com
+2. Security → enable 2-Step Verification
+3. Search "App Passwords"
+4. Select Mail → Other → type "nodejs" → Generate
+5. Copy the 16 character code into EMAIL_PASSWORD
 ```
 
 ---
@@ -65,8 +78,8 @@ NODE_ENV=development
 ## Getting Started
 
 ```bash
-npm install
-npm run dev     # starts with nodemon on port 3000
+npm install nodemailer   ← new dependency for email verification
+npm run dev              # starts with nodemon on port 3000
 ```
 
 Server runs at `http://localhost:3000`.
@@ -79,8 +92,9 @@ Server runs at `http://localhost:3000`.
 
 | Method | Endpoint | Auth Required | Role | Description |
 |--------|----------|---------------|------|-------------|
-| POST | `/api/auth/register` | No | — | Create a new user account |
-| POST | `/api/auth/login` | No | — | Login, receive access token + refresh cookie |
+| POST | `/api/auth/register` | No | — | Create account + send verification email |
+| GET | `/api/auth/verify-email/:token` | No | — | Verify email via token link |
+| POST | `/api/auth/login` | No | — | Login (verified users only) |
 | GET | `/api/auth/get-me` | Yes | any | Get currently logged-in user info |
 | POST | `/api/auth/refresh-token` | No (cookie) | — | Issue new access + refresh tokens |
 | PATCH | `/api/auth/update-role` | Yes | admin | Change another user's role |
@@ -99,12 +113,21 @@ Server runs at `http://localhost:3000`.
 - Validated by `validateRegister` middleware
 - Checks for duplicate email or username
 - Hashes password with bcrypt (10 salt rounds)
-- Creates user with `role: 'user'` by default
+- Creates user with `role: 'user'` and `isVerified: false` by default
+- Generates a random verification token using `crypto`
+- Sends verification email with a link to `/verify-email/:token`
 - Returns success message — **no tokens issued at register**
+
+### Verify Email
+- User clicks link in email → `GET /api/auth/verify-email/:token`
+- Finds user by verification token in DB
+- Sets `isVerified: true` and clears `verificationToken`
+- User can now login
 
 ### Login
 - Validated by `validateLogin` middleware
 - Looks up user by email
+- **Blocks login if `isVerified: false`** — returns `401`
 - Compares password against bcrypt hash
 - Generates 15-minute access token and 7-day refresh token
 - Saves refresh token to DB
@@ -137,12 +160,115 @@ Server runs at `http://localhost:3000`.
 
 ---
 
+## Files to Create / Update for Email Verification
+
+### 1. `utils/sendEmail.js` — CREATE this file
+```javascript
+import nodemailer from 'nodemailer';
+import config from '../config/temp.js';
+
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: config.EMAIL,
+        pass: config.EMAIL_PASSWORD
+    }
+});
+
+export const sendVerificationEmail = async (email, token) => {
+    const verificationUrl = `http://localhost:3000/api/auth/verify-email/${token}`;
+    await transporter.sendMail({
+        from: config.EMAIL,
+        to: email,
+        subject: 'Verify your email',
+        html: `
+            Email Verification
+            Click the link below to verify your email:
+            ${verificationUrl}
+        `
+    });
+};
+```
+
+### 2. `models/user.model.js` — ADD two fields
+```javascript
+// add these two fields to your existing schema
+isVerified:        { type: Boolean, default: false },
+verificationToken: { type: String }
+```
+
+### 3. `config/temp.js` — ADD email config
+```javascript
+// add these to your existing exports
+EMAIL: process.env.EMAIL,
+EMAIL_PASSWORD: process.env.EMAIL_PASSWORD
+```
+
+### 4. `controllers/auth.controller.js` — UPDATE register, LOGIN, ADD verifyEmail
+
+**Update register:**
+```javascript
+import crypto from 'crypto';
+import { sendVerificationEmail } from '../utils/sendEmail.js';
+
+// inside register controller replace User.create with:
+const verificationToken = crypto.randomBytes(32).toString('hex');
+
+await User.create({
+    username,
+    email,
+    password: hashedPassword,
+    refreshToken: null,
+    role: 'user',
+    isVerified: false,
+    verificationToken
+});
+
+await sendVerificationEmail(email, verificationToken);
+res.status(201).json({ message: 'User registered successfully. Please verify your email.' });
+```
+
+**Update login — add this check after finding user:**
+```javascript
+if (!user.isVerified) {
+    return res.status(401).json({ message: 'Please verify your email before logging in' });
+}
+```
+
+**Add verifyEmail controller:**
+```javascript
+export const verifyEmail = async (req, res, next) => {
+    try {
+        const { token } = req.params;
+        const user = await User.findOne({ verificationToken: token });
+        if (!user) {
+            return res.status(400).json({ message: 'Invalid verification token' });
+        }
+        user.isVerified = true;
+        user.verificationToken = null;
+        await user.save();
+        res.status(200).json({ message: 'Email verified successfully. You can now login.' });
+    } catch (error) {
+        next(error);
+    }
+};
+```
+
+### 5. `routes/auth.routes.js` — ADD one route
+```javascript
+// add this line
+authRouter.get('/verify-email/:token', authController.verifyEmail);
+```
+
+---
+
 ## Token Strategy
 
 | Token | Lifetime | Transported Via |
 |-------|----------|-----------------|
 | Access token | 15 minutes | Response body → `Authorization: Bearer` header |
 | Refresh token | 7 days | `httpOnly` cookie only |
+| Verification token | No expiry | Email link only |
 
 ### Token Rotation
 Every successful call to `/refresh-token` issues brand-new tokens and invalidates the old one:
@@ -246,11 +372,13 @@ res.cookie('refreshToken', refreshToken, {
 
 ```javascript
 {
-    username:     { type: String, required: true },
-    email:        { type: String, required: true, unique: true },
-    password:     { type: String, required: true },   // bcrypt hash
-    refreshToken: { type: String },                    // stored for reuse detection
-    role:         { type: String, enum: ['user', 'admin', 'manager'], default: 'user' }
+    username:          { type: String, required: true },
+    email:             { type: String, required: true, unique: true },
+    password:          { type: String, required: true },   // bcrypt hash
+    refreshToken:      { type: String },                    // stored for reuse detection
+    role:              { type: String, enum: ['user', 'admin', 'manager'], default: 'user' },
+    isVerified:        { type: Boolean, default: false },   // email verification status
+    verificationToken: { type: String }                     // cleared after verification
 }
 ```
 
@@ -269,8 +397,16 @@ Content-Type: application/json
     "password": "secure1"
 }
 
-→ 201: { "message": "User registered successfully" }
+→ 201: { "message": "User registered successfully. Please verify your email." }
 → 400: { "message": "Username must be between 3 and 20 characters" }
+```
+
+### Verify Email
+```
+GET /api/auth/verify-email/<token from email link>
+
+→ 200: { "message": "Email verified successfully. You can now login." }
+→ 400: { "message": "Invalid verification token" }
 ```
 
 ### Login
@@ -284,6 +420,7 @@ Content-Type: application/json
 }
 
 → 200: { "message": "Login successful", "token": "<accessToken>", "role": "user" }
+→ 401: { "message": "Please verify your email before logging in" }
 → Cookie set: refreshToken (httpOnly)
 ```
 
@@ -336,9 +473,16 @@ Authorization: Bearer <adminAccessToken>
 
 ```
 POST /register
-    └── account created, role: 'user', no tokens
+    ├── account created, role: 'user', isVerified: false
+    └── verification email sent
 
-POST /login
+GET /verify-email/:token
+    └── isVerified: true
+
+POST /login (unverified)
+    └── 401 Please verify your email
+
+POST /login (verified)
     ├── access token  → response body (15 mins)
     └── refresh token → httpOnly cookie (7 days)
 
@@ -369,3 +513,4 @@ Refresh token expires (7 days)
 | Privilege escalation | Role validated server-side on every admin action |
 | Self-deletion | Admin cannot delete their own account |
 | Invalid input | express-validator rejects malformed requests before controller |
+| Fake accounts | Email verification required before login |

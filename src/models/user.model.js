@@ -18,7 +18,9 @@ const userSchema = new mongoose.Schema({
     },
     role: { type: String, 
         enum: ['user', 'admin', 'manager'], 
-        default: 'user' }
+        default: 'user' },
+    isVerified: { type: Boolean, default: false },
+    verificationToken: { type: String }
 });
 const User= mongoose.model('User',userSchema);
 export default User;
