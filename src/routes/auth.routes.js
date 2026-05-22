@@ -1,17 +1,17 @@
-import {Router} from 'express';
-import {authenticate} from '../middlewares/authentication.middleware.js';
+import { Router } from 'express';
 import * as authController from '../controllers/auth.controller.js';
-import { admin } from '../middlewares/admin.middleware.js';
-const authRouter = Router();
-//post request
-authRouter.post('/register', authController.register);
-//get request
-authRouter.get('/get-me', authenticate, authController.getMe);
+import { authentication } from '../middleware/authentication.middleware.js';
+import { adminOnly } from '../middleware/authorization.middleware.js';
+import { validateRegister } from '../middleware/validators/register.validator.js';
+import { validateLogin } from '../middleware/validators/login.validator.js';
+import { validateChangeRole } from '../middleware/validators/changeRole.validator.js';
 
-//refresh token
+const authRouter = Router();
+
+authRouter.post('/register', validateRegister, authController.register);
+authRouter.post('/login', validateLogin, authController.login);
+authRouter.get('/get-me', authentication, authController.getMe);
 authRouter.post('/refresh-token', authController.refreshToken);
-//login
-authRouter.post('/login', authController.login);
-//role based access control
-authRouter.patch('/update-role', authenticate ,admin, authController.changeRole);
-export default authRouter;  
+authRouter.patch('/update-role', authentication, adminOnly, validateChangeRole, authController.changeRole);
+
+export default authRouter;

@@ -1,56 +1,50 @@
 import User from '../models/user.model.js';
 import bcrypt from 'bcrypt';
-import jwt from "jsonwebtoken";
+import jwt from 'jsonwebtoken';
 import config from '../config/temp.js';
 import { generateTokens } from '../utils/generateTokens.js';
 
 export const register = async (req, res) => {
-    const { username, email, password } = req.body;
-
-    if(!username || !email || !password){
-        return res.status(400).json({ message: 'All fields are required' });
+    try {
+        const { username, email, password } = req.body;
+        const isAlreadyRegistered = await User.findOne(
+            { $or: [{ email }, { username }] }
+        );
+        if (isAlreadyRegistered) {
+            return res.status(400).json({ message: 'User already registered' });
+        }
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await User.create({ username, email, password: hashedPassword, refreshToken: null, role: 'user' });
+        res.status(201).json({ message: 'User registered successfully' });
+    } catch (error) {
+        next(error); //pass to error middleware
     }
-    
-    const isAlreadyRegistered = await User.findOne(
-        { $or: [{ email }, { username }] }
-    );
-    if (isAlreadyRegistered) {
-        return res.status(400).json({ message: 'User already registered' });
-    }
-    
-    const hashedPassword = await bcrypt.hash(password, 10);
-    
-    const user = await User.create({
-        username,
-        email,
-        password: hashedPassword,
-        refreshToken: null,
-        role: 'user'
-    });
-    res.status(201).json({ message: 'User registered successfully' });
 };
 
 export const login = async (req, res) => {
-    const { email, password, username } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) {
-    return res.status(401).json({ message: 'User not found' });
-}
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-        return res.status(400).json({ message: 'Invalid password' });
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        if (!isPasswordValid) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+        const { accessToken, refreshToken } = await generateTokens(user, res);
+        user.refreshToken = refreshToken;
+        await user.save();
+        res.cookie('refreshToken', refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: 7 * 24 * 60 * 60 * 1000
+        });
+        res.status(200).json({ message: 'Login successful', token: accessToken, role: user.role });
+    }  catch (error) {
+        next(error); //pass to error middleware
     }
-    const { accessToken, refreshToken } = await generateTokens(user, res);
-    user.refreshToken = refreshToken;
-    await user.save();
-
-    res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000
-    });
-    res.status(200).json({ message: 'Login successful', token: accessToken, role: user.role });
 };
 
 export const getMe = async (req, res) => {
@@ -63,6 +57,7 @@ export const getMe = async (req, res) => {
         }
     });
 };
+
 export const refreshToken = async (req, res) => {
     const incomingRefreshToken = req.cookies.refreshToken;
     if (!incomingRefreshToken) {
@@ -74,7 +69,7 @@ export const refreshToken = async (req, res) => {
         if (!user) {
             return res.status(401).json({ message: 'User not found' });
         }
-         if (user.refreshToken !== incomingRefreshToken) {
+        if (user.refreshToken !== incomingRefreshToken) {
             return res.status(401).json({ message: 'Invalid refresh token' });
         }
         const { accessToken, refreshToken } = await generateTokens(user, res);
@@ -82,40 +77,27 @@ export const refreshToken = async (req, res) => {
         await user.save();
         res.cookie('refreshToken', refreshToken, {
             httpOnly: true,
-            secure: true,
+            secure: process.env.NODE_ENV === 'production',
             sameSite: 'strict',
             maxAge: 7 * 24 * 60 * 60 * 1000
         });
         res.status(200).json({ message: 'Token refreshed successfully', token: accessToken });
-    } catch (error) {
-        return res.status(401).json({ message: 'Invalid refresh token' });
+    }  catch (error) {
+        next(error); //pass to error middleware
     }
 };
-
 
 export const changeRole = async (req, res) => {
     try {
         const { userId, role } = req.body;
-        console.log('userId:', userId);
-        console.log('role:', role);      
-
-
-        if (!['user', 'manager', 'admin'].includes(role)) {
-            return res.status(400).json({ message: 'Invalid role' });
-        }
-
         const userToUpdate = await User.findById(userId);
-                console.log('userToUpdate:', userToUpdate); 
         if (!userToUpdate) {
             return res.status(404).json({ message: 'User to update not found' });
         }
-
         userToUpdate.role = role;
         await userToUpdate.save();
         res.status(200).json({ message: 'Role updated successfully' });
-
-    } catch (error) {
-         console.log('ERROR:', error.message);
-        res.status(500).json({ message: 'Server error' });
+    }  catch (error) {
+        next(error); //pass to error middleware
     }
 };
