@@ -3,7 +3,7 @@ import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
 import authRouter from './routes/auth.routes.js';
 import deleRouter from './routes/dele.route.js';
-import { errorMiddleware } from './middleware/error.middleware.js';
+import { errorMiddleware } from './middlewares/error.middleware.js';
 
 const app = express();
 app.use(express.json());
